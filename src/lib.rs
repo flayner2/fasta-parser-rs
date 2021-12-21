@@ -1,5 +1,6 @@
 use phf::{phf_map, Map};
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fs;
 
 pub const CODON_TABLE: Map<&str, &str> = phf_map! {
@@ -69,97 +70,90 @@ pub const CODON_TABLE: Map<&str, &str> = phf_map! {
     "GGG" => "G",
 };
 
-#[derive(Debug)]
-pub struct FastaFile {
-    pub records: Vec<FastaRecord>,
-    pub len: usize,
+fn get_id_and_description(header: &str) -> (String, String) {
+    let (id, desc) = header
+        .split_once(&[' ', '|'][..])
+        .unwrap_or_else(|| (header, ""));
+
+    let id = id.replace(">", "");
+
+    (id, desc.to_owned())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, Clone)]
+pub struct FastaFile {
+    pub records: BTreeSet<FastaRecord>,
+}
+
+#[derive(Debug, Eq, Clone)]
 pub struct FastaRecord {
     pub id: String,
     pub desc: String,
     pub seq: String,
-    pub len: usize,
     pub seq_type: String,
 }
 
 impl FastaFile {
-    pub fn new(records: &Vec<FastaRecord>) -> FastaFile {
+    pub fn new(records: BTreeSet<FastaRecord>) -> FastaFile {
         FastaFile {
             records: records.to_owned(),
-            len: records.len(),
         }
     }
 
-    pub fn single_record_from_file(path: &str, nucleotide: Option<bool>) -> FastaRecord {
-        let file = fs::read_to_string(path).expect("Couldn't open file");
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn single_record_from_file(
+        path: &str,
+        nucleotide: Option<bool>,
+    ) -> Result<FastaRecord, std::io::Error> {
+        let file = fs::read_to_string(path)?;
 
         let lines: Vec<&str> = file.lines().map(|line| line.trim()).collect();
-        let id;
-        let desc;
-        let seq_type;
         let seq = lines[1..].join("");
+        let seq_type = FastaRecord::infer_type(&seq, nucleotide);
 
-        match lines[0].split_once(&[' ', '|'][..]) {
-            Some(id_and_desc) => {
-                id = id_and_desc.0.replace(">", "");
-                desc = id_and_desc.1;
-            }
-            None => {
-                id = lines[0].replace(">", "");
-                desc = "";
-            }
-        }
+        let (id, desc) = get_id_and_description(lines[0]);
 
-        seq_type = FastaRecord::infer_type(&seq, nucleotide);
-
-        FastaRecord::new(id.as_str(), desc, seq.as_str(), seq_type)
+        Ok(FastaRecord::new(id, desc, seq, seq_type))
     }
 
-    pub fn parse_multifasta_from_file(path: &str, nucleotide: Option<bool>) -> FastaFile {
-        let file = fs::read_to_string(path).expect("Couldn't open file");
+    pub fn parse_multifasta_from_file(
+        path: &str,
+        nucleotide: Option<bool>,
+    ) -> Result<FastaFile, std::io::Error> {
+        let file = fs::read_to_string(path)?;
 
-        let mut records: Vec<FastaRecord> = Vec::new();
+        let mut records: BTreeSet<FastaRecord> = BTreeSet::new();
 
-        let mut id;
-        let mut desc;
         let mut seq_type;
         let mut seq = String::new();
 
         let mut fasta_lines = file.lines().map(|line| line.trim());
 
-        let first_header = fasta_lines.next().expect("Couldn't extract first line");
+        let first_header = fasta_lines.next();
 
-        match first_header.split_once(&[' ', '|'][..]) {
-            Some(id_and_desc) => {
-                id = id_and_desc.0.replace(">", "");
-                desc = id_and_desc.1;
-            }
+        let (mut id, mut desc) = match first_header {
+            Some(first_header) => get_id_and_description(first_header),
             None => {
-                id = first_header.replace(">", "");
-                desc = "";
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Input file is empty, corrupted or inaccessible.",
+                ))
             }
-        }
+        };
 
-        for line in fasta_lines {
-            if line.is_empty() {
-                continue;
-            } else if line.starts_with('>') {
+        for line in fasta_lines.filter(|line| !line.is_empty()) {
+            if line.starts_with('>') {
                 seq_type = FastaRecord::infer_type(&seq, nucleotide);
-                records.push(FastaRecord::new(id.as_str(), desc, seq.as_str(), seq_type));
+                records.insert(FastaRecord::new(id, desc, seq, seq_type));
                 seq = String::new();
 
-                match line.split_once(&[' ', '|'][..]) {
-                    Some(id_and_desc) => {
-                        id = id_and_desc.0.replace(">", "");
-                        desc = id_and_desc.1;
-                    }
-                    None => {
-                        id = line.replace(">", "");
-                        desc = "";
-                    }
-                }
+                let id_and_desc = get_id_and_description(line);
+
+                id = id_and_desc.0;
+                desc = id_and_desc.1;
             } else {
                 seq += line;
             }
@@ -167,31 +161,34 @@ impl FastaFile {
 
         // Make sure last record goes in
         seq_type = FastaRecord::infer_type(&seq, nucleotide);
-        records.push(FastaRecord::new(id.as_str(), desc, seq.as_str(), seq_type));
+        records.insert(FastaRecord::new(id, desc, seq, seq_type));
 
-        FastaFile::new(&records)
+        Ok(FastaFile::new(records))
     }
 }
 
 impl FastaRecord {
-    pub fn new(id: &str, desc: &str, seq: &str, seq_type: &str) -> FastaRecord {
+    pub fn new(id: String, desc: String, seq: String, seq_type: String) -> FastaRecord {
         FastaRecord {
-            id: id.to_string(),
-            desc: desc.to_string(),
-            seq: seq.to_string(),
-            len: seq.len(),
-            seq_type: seq_type.to_string(),
+            id,
+            desc,
+            seq,
+            seq_type,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.seq.len()
     }
 
     pub fn gc_content(&self) -> f32 {
         let gc_count = self
             .seq
-            .chars()
-            .filter(|&nuc| nuc == 'C' || nuc == 'G')
+            .bytes()
+            .filter(|&nuc| nuc == b'C' || nuc == b'G')
             .count() as f32;
 
-        gc_count / self.len as f32
+        gc_count / self.len() as f32
     }
 
     pub fn transcribe(&self) -> String {
@@ -212,7 +209,7 @@ impl FastaRecord {
                 let mut translated = String::new();
 
                 for codon in seq.as_bytes().chunks(3) {
-                    match CODON_TABLE.get(&String::from_utf8(codon.to_owned()).unwrap()) {
+                    match CODON_TABLE.get(std::str::from_utf8(codon).unwrap()) {
                         None => continue,
                         Some(aminoacid) => {
                             if *aminoacid == "*" {
@@ -232,25 +229,24 @@ impl FastaRecord {
         }
     }
 
-    fn infer_type(seq: &str, nucleotide: Option<bool>) -> &str {
+    fn infer_type(seq: &str, nucleotide: Option<bool>) -> String {
         match nucleotide {
             Some(is_nuc) => {
                 if is_nuc {
-                    return "nucleotide";
+                    return "nucleotide".to_owned();
                 } else {
-                    return "protein";
+                    return "protein".to_owned();
                 }
             }
             None => {
                 if seq.to_uppercase().contains(
                     &[
-                        'F', 'L', 'I', 'V', 'S', 'P', 'T', 'Y', 'H', 'Q', 'N', 'K', 'D', 'E', 'W',
-                        'R',
+                        'F', 'L', 'I', 'V', 'S', 'P', 'Y', 'H', 'Q', 'N', 'K', 'D', 'E', 'W', 'R',
                     ][..],
                 ) {
-                    return "protein";
+                    return "protein".to_owned();
                 } else {
-                    return "nucleotide";
+                    return "nucleotide".to_owned();
                 }
             }
         }
@@ -259,42 +255,21 @@ impl FastaRecord {
 
 impl PartialEq for FastaFile {
     fn eq(&self, other: &Self) -> bool {
-        if self.len != other.len {
+        if self.len() != other.len() {
             return false;
         }
 
-        let mut self_records = self.records.clone();
-        let mut other_records = other.records.clone();
-
-        self_records.sort();
-        other_records.sort();
-
-        for i in 0..self.len {
-            if self_records[i] != other_records[i] {
-                return false;
-            }
-        }
-
-        true
+        self.records
+            .difference(&other.records)
+            .collect::<Vec<_>>()
+            .len()
+            == 0
     }
 }
 
 impl PartialEq for FastaRecord {
     fn eq(&self, other: &FastaRecord) -> bool {
-        self.id == other.id && self.seq == other.seq && self.len == other.len
-    }
-}
-
-impl Eq for FastaRecord {}
-
-impl Clone for FastaRecord {
-    fn clone(&self) -> Self {
-        FastaRecord::new(
-            self.id.as_str(),
-            self.desc.as_str(),
-            self.seq.as_str(),
-            self.seq_type.as_str(),
-        )
+        self.id == other.id && self.seq == other.seq && self.len() == other.len()
     }
 }
 
@@ -322,7 +297,6 @@ mod tests {
             id: String::from("test"),
             desc: String::from(""),
             seq: String::from("ACTGTGAC"),
-            len: 8,
             seq_type: String::from("nucleotide"),
         };
         let parsed: Vec<&str> = file
@@ -333,74 +307,101 @@ mod tests {
         let id = parsed[0].replace(">", "");
         let seq = parsed[1];
 
-        let test = FastaRecord::new(id.as_str(), "", seq, "nucleotide");
+        let test = FastaRecord::new(id, String::new(), seq.to_owned(), "nucleotide".to_owned());
 
         assert_eq!(expected, test);
     }
 
     #[test]
-    fn loads_single_record_from_fasta() {
+    fn loads_single_record_from_fasta() -> Result<(), std::io::Error> {
         let path = "./test.fas";
         let expected = FastaRecord {
             id: String::from("test"),
             desc: String::from(""),
             seq: String::from("ACTGTGAC"),
-            len: 8,
             seq_type: String::from("nucleotide"),
         };
-        let parsed = FastaFile::single_record_from_file(path, None);
+        let parsed = FastaFile::single_record_from_file(path, None)?;
 
         assert_eq!(expected, parsed);
+
+        Ok(())
     }
 
     #[test]
-    fn loads_multifasta() {
+    fn loads_multifasta() -> Result<(), std::io::Error> {
         let path = "./test_multiple.fas";
-        let parsed = FastaFile::parse_multifasta_from_file(path, None);
+        let parsed = FastaFile::parse_multifasta_from_file(path, None)?;
 
-        let expected = FastaFile::new(&vec![
-            FastaRecord::new("test1", "desc1", "ACTG", "nucleotide"),
-            FastaRecord::new("test2", "desc2", "TGCA", "nucleotide"),
-            FastaRecord::new("test3", "desc3", "TTGAGA", "nucleotide"),
-        ]);
-
-        assert_eq!(parsed, expected);
-    }
-
-    #[test]
-    fn loads_multiline_seq_from_multifasta() {
-        let path = "./test_multiline.fas";
-        let parsed = FastaFile::parse_multifasta_from_file(path, None);
-
-        let expected = FastaFile::new(&vec![
-            FastaRecord::new("test1", "multiline1", "ACTGTGCATGAC", "nucleotide"),
+        let expected = FastaFile::new(BTreeSet::from([
             FastaRecord::new(
-                "test2",
-                "multiline2 long description",
-                "ACTGTGACTGTGAC",
-                "nucleotide",
+                "test1".to_owned(),
+                "desc1".to_owned(),
+                "ACTG".to_owned(),
+                "nucleotide".to_owned(),
             ),
-        ]);
+            FastaRecord::new(
+                "test2".to_owned(),
+                "desc2".to_owned(),
+                "TGCA".to_owned(),
+                "nucleotide".to_owned(),
+            ),
+            FastaRecord::new(
+                "test3".to_owned(),
+                "desc3".to_owned(),
+                "TTGAGA".to_owned(),
+                "nucleotide".to_owned(),
+            ),
+        ]));
 
         assert_eq!(parsed, expected);
+
+        Ok(())
     }
 
     #[test]
-    fn calculates_gc_content() {
+    fn loads_multiline_seq_from_multifasta() -> Result<(), std::io::Error> {
+        let path = "./test_multiline.fas";
+        let parsed = FastaFile::parse_multifasta_from_file(path, None)?;
+
+        let expected = FastaFile::new(BTreeSet::from([
+            FastaRecord::new(
+                "test1".to_owned(),
+                "multiline1".to_owned(),
+                "ACTGTGCATGAC".to_owned(),
+                "nucleotide".to_owned(),
+            ),
+            FastaRecord::new(
+                "test2".to_owned(),
+                "multiline2 long description".to_owned(),
+                "ACTGTGACTGTGAC".to_owned(),
+                "nucleotide".to_owned(),
+            ),
+        ]));
+
+        assert_eq!(parsed, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn calculates_gc_content() -> Result<(), std::io::Error> {
         let path = "./test_gc.fas";
-        let record = FastaFile::single_record_from_file(path, None);
+        let record = FastaFile::single_record_from_file(path, None)?;
         let target = 60.919540;
 
         assert!(target.approx_eq(record.gc_content() * 100.0, (0.001, 2)));
+
+        Ok(())
     }
 
     #[test]
     fn translates() {
         let rna_seq = FastaRecord::new(
-            "rna_seq",
-            "",
-            "AUGGCCAUGGCGCCCAGAACUGAGAUCAAUAGUACCCGUAUUAACGGGUGA",
-            "nucleotide",
+            "rna_seq".to_owned(),
+            "".to_owned(),
+            "AUGGCCAUGGCGCCCAGAACUGAGAUCAAUAGUACCCGUAUUAACGGGUGA".to_owned(),
+            "nucleotide".to_owned(),
         );
         let expected = "MAMAPRTEINSTRING";
         let translated = rna_seq.translate(false);
