@@ -202,9 +202,7 @@ impl FastaRecord {
         };
 
         match self.seq_type.as_str() {
-            "protein" => {
-                return seq;
-            }
+            "protein" => seq,
             "nucleotide" => {
                 let mut translated = String::new();
 
@@ -221,11 +219,9 @@ impl FastaRecord {
                     }
                 }
 
-                return translated;
+                translated
             }
-            _ => {
-                return String::from("");
-            }
+            _ => String::new(),
         }
     }
 
