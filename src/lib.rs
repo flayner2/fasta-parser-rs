@@ -196,10 +196,13 @@ impl FastaRecord {
     }
 
     pub fn translate(&self, should_transcribe: bool) -> String {
-        let seq = match should_transcribe {
-            true => self.transcribe(),
-            false => self.seq.clone(),
-        };
+        let seq;
+
+        if should_transcribe {
+            seq = self.transcribe();
+        } else {
+            seq = self.seq.clone();
+        }
 
         match self.seq_type.as_str() {
             "protein" => seq,
@@ -251,15 +254,7 @@ impl FastaRecord {
 
 impl PartialEq for FastaFile {
     fn eq(&self, other: &Self) -> bool {
-        if self.len() != other.len() {
-            return false;
-        }
-
-        self.records
-            .difference(&other.records)
-            .collect::<Vec<_>>()
-            .len()
-            == 0
+        self.records == other.records
     }
 }
 
@@ -403,5 +398,16 @@ mod tests {
         let translated = rna_seq.translate(false);
 
         assert_eq!(translated, expected);
+    }
+
+    #[test]
+    fn translates_long() -> Result<(), std::io::Error> {
+        let to_translate =
+            FastaFile::single_record_from_file("./test_translate_long_rna.fas", None)?;
+        let protein = FastaFile::single_record_from_file("./test_translate_long_prot.fas", None)?;
+
+        assert_eq!(to_translate.translate(false), protein.seq);
+
+        Ok(())
     }
 }
