@@ -81,6 +81,12 @@ fn get_id_and_description(header: &str) -> (String, String) {
 }
 
 #[derive(Debug, Eq, Clone)]
+pub enum SeqType {
+    Nucleotide,
+    Protein,
+}
+
+#[derive(Debug, Eq, Clone)]
 pub struct FastaFile {
     pub records: BTreeSet<FastaRecord>,
 }
@@ -90,7 +96,13 @@ pub struct FastaRecord {
     pub id: String,
     pub desc: String,
     pub seq: String,
-    pub seq_type: String,
+    pub seq_type: SeqType,
+}
+
+impl PartialEq for SeqType {
+    fn eq(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 impl FastaFile {
@@ -168,7 +180,7 @@ impl FastaFile {
 }
 
 impl FastaRecord {
-    pub fn new(id: String, desc: String, seq: String, seq_type: String) -> FastaRecord {
+    pub fn new(id: String, desc: String, seq: String, seq_type: SeqType) -> FastaRecord {
         FastaRecord {
             id,
             desc,
@@ -204,9 +216,9 @@ impl FastaRecord {
             seq = self.seq.clone();
         }
 
-        match self.seq_type.as_str() {
-            "protein" => seq,
-            "nucleotide" => {
+        match self.seq_type {
+            SeqType::Protein => seq,
+            SeqType::Nucleotide => {
                 let mut translated = String::new();
 
                 for codon in seq.as_bytes().chunks(3) {
@@ -224,17 +236,16 @@ impl FastaRecord {
 
                 translated
             }
-            _ => String::new(),
         }
     }
 
-    fn infer_type(seq: &str, nucleotide: Option<bool>) -> String {
+    fn infer_type(seq: &str, nucleotide: Option<bool>) -> SeqType {
         match nucleotide {
             Some(is_nuc) => {
                 if is_nuc {
-                    return "nucleotide".to_owned();
+                    return SeqType::Nucleotide;
                 } else {
-                    return "protein".to_owned();
+                    return SeqType::Protein;
                 }
             }
             None => {
@@ -243,9 +254,9 @@ impl FastaRecord {
                         'F', 'L', 'I', 'V', 'S', 'P', 'Y', 'H', 'Q', 'N', 'K', 'D', 'E', 'W', 'R',
                     ][..],
                 ) {
-                    return "protein".to_owned();
+                    return SeqType::Protein;
                 } else {
-                    return "nucleotide".to_owned();
+                    return SeqType::Nucleotide;
                 }
             }
         }
@@ -288,7 +299,7 @@ mod tests {
             id: String::from("test"),
             desc: String::from(""),
             seq: String::from("ACTGTGAC"),
-            seq_type: String::from("nucleotide"),
+            seq_type: SeqType::Nucleotide,
         };
         let parsed: Vec<&str> = file
             .split_terminator(&['\n', '\r'][..])
@@ -298,7 +309,7 @@ mod tests {
         let id = parsed[0].replace(">", "");
         let seq = parsed[1];
 
-        let test = FastaRecord::new(id, String::new(), seq.to_owned(), "nucleotide".to_owned());
+        let test = FastaRecord::new(id, String::new(), seq.to_owned(), SeqType::Nucleotide);
 
         assert_eq!(expected, test);
     }
@@ -310,7 +321,7 @@ mod tests {
             id: String::from("test"),
             desc: String::from(""),
             seq: String::from("ACTGTGAC"),
-            seq_type: String::from("nucleotide"),
+            seq_type: SeqType::Nucleotide,
         };
         let parsed = FastaFile::single_record_from_file(path, None)?;
 
@@ -329,19 +340,19 @@ mod tests {
                 "test1".to_owned(),
                 "desc1".to_owned(),
                 "ACTG".to_owned(),
-                "nucleotide".to_owned(),
+                SeqType::Nucleotide,
             ),
             FastaRecord::new(
                 "test2".to_owned(),
                 "desc2".to_owned(),
                 "TGCA".to_owned(),
-                "nucleotide".to_owned(),
+                SeqType::Nucleotide,
             ),
             FastaRecord::new(
                 "test3".to_owned(),
                 "desc3".to_owned(),
                 "TTGAGA".to_owned(),
-                "nucleotide".to_owned(),
+                SeqType::Nucleotide,
             ),
         ]));
 
@@ -360,13 +371,13 @@ mod tests {
                 "test1".to_owned(),
                 "multiline1".to_owned(),
                 "ACTGTGCATGAC".to_owned(),
-                "nucleotide".to_owned(),
+                SeqType::Nucleotide,
             ),
             FastaRecord::new(
                 "test2".to_owned(),
                 "multiline2 long description".to_owned(),
                 "ACTGTGACTGTGAC".to_owned(),
-                "nucleotide".to_owned(),
+                SeqType::Nucleotide,
             ),
         ]));
 
@@ -392,7 +403,7 @@ mod tests {
             "rna_seq".to_owned(),
             "".to_owned(),
             "AUGGCCAUGGCGCCCAGAACUGAGAUCAAUAGUACCCGUAUUAACGGGUGA".to_owned(),
-            "nucleotide".to_owned(),
+            SeqType::Nucleotide,
         );
         let expected = "MAMAPRTEINSTRING";
         let translated = rna_seq.translate(false);
